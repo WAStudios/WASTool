@@ -1,0 +1,3 @@
+# These shouldn't go to github
+.idea
+WASLibs/
