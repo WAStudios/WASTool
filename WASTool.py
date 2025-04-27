@@ -4,6 +4,7 @@ import yaml
 import requests
 import shutil
 import stat
+import time
 
 PKGMETA_URL = "https://raw.githubusercontent.com/WeakAuras/WeakAuras2/main/.pkgmeta"
 WASLIBS_REPO_PATH = "./WASLibs"
@@ -31,11 +32,17 @@ def valid_refs(target_path):
 
 def handle_remove_readonly(func, path, exc):
     excvalue = exc[1]
-    if func in (os.rmdir, os.remove, os.unlink) and excvalue.errno == 5:
+    try:
         os.chmod(path, stat.S_IWRITE)
         func(path)
-    else:
-        raise
+    except PermissionError:
+        print(f"Retrying removal for locked file: {path}")
+        time.sleep(0.5)
+        try:
+            func(path)
+        except Exception as e:
+            print(f"Failed to delete {path}: {e}")
+            raise
 
 def sync_libraries(pkgmeta_path, libs_dir):
     with open(pkgmeta_path, "r") as f:
@@ -112,8 +119,13 @@ def commit_and_push_waslibs():
 def main():
     pkgmeta_file = fetch_pkgmeta()
 
-    if not os.path.exists(WASLIBS_REPO_PATH):
-        subprocess.run(["git", "clone", WASLIBS_REMOTE, WASLIBS_REPO_PATH], check=True)
+    # Preemptively delete WASLibs if it exists
+    if os.path.exists(WASLIBS_REPO_PATH):
+        print("Removing existing WASLibs directory before fresh run...")
+        shutil.rmtree(WASLIBS_REPO_PATH, onerror=handle_remove_readonly)
+        print("Previous WASLibs directory removed.")
+
+    subprocess.run(["git", "clone", WASLIBS_REMOTE, WASLIBS_REPO_PATH], check=True)
 
     subprocess.run(["git", "-C", WASLIBS_REPO_PATH, "remote", "set-url", "origin", WASLIBS_REMOTE], check=True)
 
@@ -126,11 +138,6 @@ def main():
     success = commit_and_push_waslibs()
 
     os.remove(pkgmeta_file)
-
-    if success and os.path.exists(WASLIBS_REPO_PATH):
-        print("Cleaning up local WASLibs directory...")
-        shutil.rmtree(WASLIBS_REPO_PATH, onerror=handle_remove_readonly)
-        print("Cleanup complete.")
 
 if __name__ == "__main__":
     main()
