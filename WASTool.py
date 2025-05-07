@@ -35,7 +35,11 @@ def sync_libraries(pkgmeta_file):
     print(f"Found {len(externals)} externals in .pkgmeta")
 
     for path, repo_info in externals.items():
-        target_path = os.path.join(WASLIBS_REPO_PATH, os.path.basename(path).replace('/', os.sep))
+        if path.startswith("libs/"):
+            target_path = os.path.join(WASLIBS_REPO_PATH, path.split("/", 1)[1])
+        else:
+            target_path = os.path.join(WASLIBS_REPO_PATH, path)
+
         repo_url = repo_info.get('url') if isinstance(repo_info, dict) else repo_info
         tag = repo_info.get('tag') if isinstance(repo_info, dict) else None
 
