@@ -34,6 +34,12 @@ def sync_libraries(pkgmeta_file):
     externals = data.get('externals', {})
     print(f"Found {len(externals)} externals in .pkgmeta")
 
+    # Clean out WASLibs/libs/ if it exists
+    libs_folder = os.path.join(WASLIBS_REPO_PATH, "libs")
+    if os.path.exists(libs_folder):
+        print("Removing nested libs/ directory from previous run...")
+        shutil.rmtree(libs_folder, onerror=handle_remove_readonly)
+
     for path, repo_info in externals.items():
         if path.startswith("libs/"):
             target_path = os.path.join(WASLIBS_REPO_PATH, path.split("/", 1)[1])
@@ -43,7 +49,7 @@ def sync_libraries(pkgmeta_file):
         repo_url = repo_info.get('url') if isinstance(repo_info, dict) else repo_info
         tag = repo_info.get('tag') if isinstance(repo_info, dict) else None
 
-        if os.path.exists(target_path):
+        if os.path.exists(target_path) or os.path.exists(os.path.join(WASLIBS_REPO_PATH, path)):
             print(f"Removing existing {target_path} before fresh clone...")
             shutil.rmtree(target_path, onerror=handle_remove_readonly)
 
