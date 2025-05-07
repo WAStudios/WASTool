@@ -80,7 +80,7 @@ def inject_manual_ace3_libs():
     print(f"Cloning {ACE3_REPO} into {CLONE_TEMP}...")
     subprocess.run(['git', 'clone', '--depth', '1', ACE3_REPO, CLONE_TEMP], check=True)
 
-    for lib in ["AceAddon-3.0", "AceTimer-3.0", "CallbackHandler-1.0"]:
+    for lib in ["AceAddon-3.0", "AceBucket-3.0", "AceEvent-3.0", "AceTimer-3.0", "CallbackHandler-1.0"]:
         src = os.path.join(CLONE_TEMP, lib)
         dst = os.path.join(TARGET, lib)
         if os.path.exists(dst):
