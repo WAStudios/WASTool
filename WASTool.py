@@ -1,143 +1,124 @@
 import os
 import subprocess
-import yaml
 import requests
 import shutil
-import stat
-import time
+import yaml
 
-PKGMETA_URL = "https://raw.githubusercontent.com/WeakAuras/WeakAuras2/main/.pkgmeta"
+WASLIBS_REPO_URL = "git@github.com:WAStudios/WASLibs.git"
 WASLIBS_REPO_PATH = "./WASLibs"
-WASLIBS_REMOTE = "git@github.com:WAStudios/WASLibs.git"  # Use SSH for automation
+PKGMETA_URL = "https://raw.githubusercontent.com/WeakAuras/WeakAuras2/main/.pkgmeta"
 
 def fetch_pkgmeta():
-    print(f"Fetching .pkgmeta from {PKGMETA_URL}")
     response = requests.get(PKGMETA_URL)
-    if response.status_code == 200:
-        pkgmeta_temp = "pkgmeta_temp.yml"
-        with open(pkgmeta_temp, "w") as f:
-            f.write(response.text)
-        print(".pkgmeta fetched successfully.")
-        return pkgmeta_temp
-    else:
-        raise Exception(f"Failed to fetch .pkgmeta: {response.status_code}")
+    response.raise_for_status()
+    with open("pkgmeta_temp.yml", "w", encoding='utf-8') as f:
+        f.write(response.text)
+    return "pkgmeta_temp.yml"
 
-def valid_refs(target_path):
-    result = subprocess.run(
-        ["git", "-C", target_path, "ls-remote", "--heads", "--tags", "origin"],
-        capture_output=True, text=True, check=True
-    )
-    refs = [line.split()[1].replace('refs/heads/', '').replace('refs/tags/', '') for line in result.stdout.splitlines()]
-    return refs
+def handle_remove_readonly(func, path, exc_info):
+    import stat
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
 
-def handle_remove_readonly(func, path, exc):
-    excvalue = exc[1]
-    try:
-        os.chmod(path, stat.S_IWRITE)
-        func(path)
-    except PermissionError:
-        print(f"Retrying removal for locked file: {path}")
-        time.sleep(0.5)
-        try:
-            func(path)
-        except Exception as e:
-            print(f"Failed to delete {path}: {e}")
-            raise
-
-def sync_libraries(pkgmeta_path, libs_dir):
-    with open(pkgmeta_path, "r") as f:
-        pkgmeta_data = yaml.safe_load(f)
-
-    externals = pkgmeta_data.get("externals", {})
-    print(f"Found {len(externals)} externals in .pkgmeta")
-
-    for path, data in externals.items():
-        target_path = os.path.join(libs_dir, os.path.basename(path))
-        if isinstance(data, str):
-            url = data
-            branch_or_tag = None
-        elif isinstance(data, dict):
-            url = data.get("url")
-            branch_or_tag = data.get("tag") or data.get("commit")
-        else:
-            print(f"Unknown format for {path}, skipping.")
-            continue
-
-        if os.path.exists(target_path):
-            if os.path.exists(os.path.join(target_path, ".git")):
-                try:
-                    refs = valid_refs(target_path)
-                    result = subprocess.run(["git", "-C", target_path, "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True, check=True)
-                    current_branch = result.stdout.strip()
-
-                    if current_branch == "HEAD":
-                        subprocess.run(["git", "-C", target_path, "fetch", "-q"], check=True)
-                        if branch_or_tag in refs:
-                            subprocess.run(["git", "-C", target_path, "checkout", branch_or_tag, "-q"], check=True)
-                        else:
-                            fallback = "master" if "master" in refs else "main"
-                            subprocess.run(["git", "-C", target_path, "reset", "--hard", f"origin/{fallback}", "-q"], check=True)
-                            subprocess.run(["git", "-C", target_path, "checkout", fallback, "-q"], check=True)
-                    else:
-                        subprocess.run(["git", "-C", target_path, "pull", "-q"], check=True)
-
-                except subprocess.CalledProcessError as e:
-                    print(f"Git operation failed for {target_path}: {e}")
-                continue
-            elif os.path.exists(os.path.join(target_path, ".svn")):
-                subprocess.run(["svn", "update", target_path, "--quiet"], check=True)
-                continue
-
-        if "townlong-yak.com" in url or url.endswith(".git") or "github.com" in url:
-            try:
-                subprocess.run(["git", "clone", "-q", url, target_path], check=True)
-                if branch_or_tag:
-                    subprocess.run(["git", "-C", target_path, "checkout", branch_or_tag, "-q"], check=True)
-                if os.path.exists(os.path.join(target_path, ".git")):
-                    shutil.rmtree(os.path.join(target_path, ".git"), onerror=handle_remove_readonly)
-            except subprocess.CalledProcessError as e:
-                print(f"Git clone failed for {url}: {e}")
-        else:
-            try:
-                subprocess.run(["svn", "checkout", url, target_path, "--quiet"], check=True)
-            except subprocess.CalledProcessError as e:
-                print(f"SVN checkout failed for {url}: {e}")
-
-    print("All libraries fetched or updated successfully.")
-
-def commit_and_push_waslibs():
-    try:
-        subprocess.run(["git", "-C", WASLIBS_REPO_PATH, "add", "."], check=True)
-        subprocess.run(["git", "-C", WASLIBS_REPO_PATH, "commit", "-m", "Update libraries from latest .pkgmeta"], check=True)
-        subprocess.run(["git", "-C", WASLIBS_REPO_PATH, "push"], check=True)
-        print("WASLibs repository updated and pushed successfully.")
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"Failed to update WASLibs repository: {e}")
-        return False
-
-def main():
-    pkgmeta_file = fetch_pkgmeta()
-
-    # Preemptively delete WASLibs if it exists
+def cleanup_previous():
     if os.path.exists(WASLIBS_REPO_PATH):
         print("Removing existing WASLibs directory before fresh run...")
         shutil.rmtree(WASLIBS_REPO_PATH, onerror=handle_remove_readonly)
         print("Previous WASLibs directory removed.")
+    os.makedirs(WASLIBS_REPO_PATH)
 
-    subprocess.run(["git", "clone", WASLIBS_REMOTE, WASLIBS_REPO_PATH], check=True)
+def sync_libraries(pkgmeta_file):
+    with open(pkgmeta_file, 'r', encoding='utf-8') as f:
+        data = yaml.safe_load(f)
 
-    subprocess.run(["git", "-C", WASLIBS_REPO_PATH, "remote", "set-url", "origin", WASLIBS_REMOTE], check=True)
+    externals = data.get('externals', {})
+    print(f"Found {len(externals)} externals in .pkgmeta")
 
-    libs_dir = os.path.join(WASLIBS_REPO_PATH, "libs")
-    if not os.path.exists(libs_dir):
-        os.makedirs(libs_dir)
+    for path, repo_info in externals.items():
+        target_path = os.path.join(WASLIBS_REPO_PATH, os.path.basename(path).replace('/', os.sep))
+        repo_url = repo_info.get('url') if isinstance(repo_info, dict) else repo_info
+        tag = repo_info.get('tag') if isinstance(repo_info, dict) else None
 
-    sync_libraries(pkgmeta_file, libs_dir)
+        if os.path.exists(target_path):
+            print(f"Removing existing {target_path} before fresh clone...")
+            shutil.rmtree(target_path, onerror=handle_remove_readonly)
 
-    success = commit_and_push_waslibs()
+        if repo_url.startswith("https://repos.curseforge.com") or repo_url.startswith("https://repos.wowace.com"):
+            print(f"Using SVN to checkout {repo_url} into {target_path}")
+            subprocess.run(['svn', 'checkout', repo_url, target_path], check=True)
+        elif "townlong-yak.com" in repo_url:
+            print(f"Using Git to clone {repo_url} into {target_path} (no depth, special case)")
+            subprocess.run(['git', 'clone', repo_url, target_path], check=True)
+        else:
+            print(f"Using Git to clone {repo_url} into {target_path}")
+            subprocess.run(['git', 'clone', '--depth', '1', repo_url, target_path], check=True)
+            if tag:
+                print(f"Fetching tags for {repo_url}...")
+                subprocess.run(['git', '-C', target_path, 'fetch', '--tags'], check=True)
+                print(f"Checking out tag {tag} in {target_path}")
+                subprocess.run(['git', '-C', target_path, 'checkout', tag], check=True)
 
-    os.remove(pkgmeta_file)
+        # Clean up .git folders
+        git_dir = os.path.join(target_path, '.git')
+        if os.path.exists(git_dir):
+            print(f"Removing embedded .git repository in {target_path}")
+            shutil.rmtree(git_dir, onerror=handle_remove_readonly)
+
+    print("All libraries fetched or updated successfully.")
+
+
+def inject_manual_ace3_libs():
+    print("Cloning Ace3 libraries manually...")
+
+    ACE3_REPO = "https://github.com/hurricup/WoW-Ace3.git"
+    CLONE_TEMP = "./Ace3_TEMP"
+    TARGET = WASLIBS_REPO_PATH
+
+    if os.path.exists(CLONE_TEMP):
+        shutil.rmtree(CLONE_TEMP, onerror=handle_remove_readonly)
+
+    print(f"Cloning {ACE3_REPO} into {CLONE_TEMP}...")
+    subprocess.run(['git', 'clone', '--depth', '1', ACE3_REPO, CLONE_TEMP], check=True)
+
+    for lib in ["AceAddon-3.0", "AceTimer-3.0", "CallbackHandler-1.0"]:
+        src = os.path.join(CLONE_TEMP, lib)
+        dst = os.path.join(TARGET, lib)
+        if os.path.exists(dst):
+            shutil.rmtree(dst, onerror=handle_remove_readonly)
+        shutil.copytree(src, dst)
+        print(f"✔ Injected {lib}")
+
+    print("Cleaning up Ace3_TEMP clone...")
+    shutil.rmtree(CLONE_TEMP, onerror=handle_remove_readonly)
+
+def stage_commit_push():
+    print("Initializing Git in WASLibs directory...")
+    subprocess.run(['git', '-C', WASLIBS_REPO_PATH, 'init', '-b', 'main'], check=True)  # <-- set branch explicitly
+    subprocess.run(['git', '-C', WASLIBS_REPO_PATH, 'remote', 'add', 'origin', WASLIBS_REPO_URL], check=True)
+    print("Staging all files for commit...")
+    subprocess.run(['git', '-C', WASLIBS_REPO_PATH, 'add', '.'], check=True)
+    print("Committing changes...")
+    try:
+        subprocess.run(['git', '-C', WASLIBS_REPO_PATH, 'commit', '-m', 'Update libraries from latest .pkgmeta'], check=True)
+        print("Pushing changes to remote...")
+        subprocess.run(['git', '-C', WASLIBS_REPO_PATH, 'push', 'origin', 'main', '--force'], check=True)
+        print("WASLibs repository updated and pushed successfully.")
+    except subprocess.CalledProcessError:
+        print("No changes to commit.")
+
+def cleanup_temp():
+    print("Cleaning up temporary files...")
+    if os.path.exists("pkgmeta_temp.yml"):
+        os.remove("pkgmeta_temp.yml")
+    print("Cleanup complete.")
+
+def main():
+    cleanup_previous()
+    pkgmeta = fetch_pkgmeta()
+    sync_libraries(pkgmeta)
+    inject_manual_ace3_libs()
+    stage_commit_push()
+    cleanup_temp()
 
 if __name__ == "__main__":
     main()
